@@ -7,23 +7,42 @@ model = whisper.load_model("base")
 
 text = ""
 
+def perform_transcription(path: str):
+    ''' Read the file and perform the transcription'''
+    audio = whisper.load_audio("sample.wav")
+    audio = whisper.pad_or_trim(audio)
+
+    mel = whisper.log_mel_spectrogram(audio).to(model.device)
+
+    _, probs = model.detect_language(mel)
+    print(f"Detected language: {max(probs, key=probs.get)}")
+
+    options = whisper.DecodingOptions(fp16 = False)
+    return whisper.decode(model, mel, options)
+
 @app.route('/',methods=['GET', 'POST','OPTIONS'])
-def translate():
+def recieve_file():
 
     print("Got request")
-    raw_data = request.data
+
+    # Save request into the file
     file = open("sample.wav", "wb")
-    file.write(raw_data)
+    file.write(request.data)
     file.close()
-    result = model.transcribe("sample.wav")
 
-    global text
-    text = text + " " + result["text"]
+    # Perform speech-to-text
+    result = perform_transcription("sample.wav")
 
+    # Output the text and save the result of course
+    print(result.text)
+    text = text + " " + result.text
+        
+    # Save the text in a txt file
     text_file = open("Output.txt", "w")
     text_file.write(text)
     text_file.close()
 
+    # Return the text to the frontend
     return '<h1>{}</h1>'.format(text)
 
 
