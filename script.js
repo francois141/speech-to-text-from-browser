@@ -12,7 +12,8 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         audio: true
     }).then(stream => {
 
-        console.log("Starting the programm")
+        console.log("Starting the program")
+
         mediaRecorder = new MediaRecorder(stream)
 
         mediaRecorder.ondataavailable = (e) => {
@@ -30,7 +31,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 
         // Create the loop
         window.setInterval(function () {
-            console.log("Send a text to the backend")
+            console.log('Send a text to the backend')
             stopRecording();
             record();
         }, 10000);
@@ -39,8 +40,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         console.log('Following error has occured : ', error)
     })
 } else {
-    stateIndex = ''
-    application(stateIndex)
+    console.log('Failed to start the program')
 }
 
 const record = () => {
