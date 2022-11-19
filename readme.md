@@ -23,6 +23,20 @@ This is a small proof of concept to test how we can record sound from the naviga
 
 </div>
 
+## How to run the code
+
+Run the backend
+
+``` bash
+python app.py
+```
+
+Run the frontend
+
+``` bash
+python -m http.server 8000
+```
+
 ## Live demonstration
 
 TODO: ADD GIF HERE
