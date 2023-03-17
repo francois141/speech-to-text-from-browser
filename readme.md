@@ -44,3 +44,4 @@ TODO: ADD GIF HERE
 ### Documentation
 
 Convert blobs into mp3: https://medium.com/jeremy-gottfrieds-tech-blog/javascript-tutorial-record-audio-and-encode-it-to-mp3-2eedcd466e78
+Example for livekit : https://github.com/livekit/server-sdk-go/blob/main/examples/filesaver/main.go
