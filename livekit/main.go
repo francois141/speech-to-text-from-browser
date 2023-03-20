@@ -1,13 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
-	"github.com/pion/webrtc/v3"
 	"math/rand"
+	"net/http"
 	"os"
-	"time"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
 
 	lksdk "github.com/livekit/server-sdk-go"
+	"github.com/livekit/server-sdk-go/pkg/samplebuilder"
+)
+
+var (
+	host, apiKey, apiSecret, roomName, identity string
 )
 
 func main() {
@@ -16,23 +29,42 @@ func main() {
 	apiSecret := "secret"
 	roomName := "my-first-room"
 	identity := "botuser"
-	roomCB := &lksdk.RoomCallback{
-		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackSubscribed:   trackSubscribed,
-			OnTrackUnsubscribed: trackUnSubscribed,
-		},
-	}
-	_, err := lksdk.ConnectToRoom(host, lksdk.ConnectInfo{
+
+	room, err := lksdk.ConnectToRoom(host, lksdk.ConnectInfo{
 		APIKey:              apiKey,
 		APISecret:           apiSecret,
 		RoomName:            roomName,
 		ParticipantIdentity: identity,
-	}, roomCB)
+	}, &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnTrackSubscribed: onTrackSubscribed,
+		},
+	})
 	if err != nil {
 		panic(err)
 	}
 
-	time.Sleep(time.Hour)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+
+	<-sigChan
+	room.Disconnect()
+}
+
+func onTrackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	fileName := fmt.Sprintf("%s-%s", rp.Identity(), track.ID())
+	fmt.Println("write track to file ", fileName)
+	NewTrackWriter(track, rp.WritePLI, fileName)
+}
+
+const (
+	maxAudioLate = 200 // 4s for audio
+)
+
+type TrackWriter struct {
+	sb     *samplebuilder.SampleBuilder
+	writer media.Writer
+	track  *webrtc.TrackRemote
 }
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -45,47 +77,83 @@ func RandStringBytes(n int) string {
 	return string(b)
 }
 
-func trackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+var counter = 0
+var byteBuffer bytes.Buffer
 
-	currentBuffer := make([]byte, 0)
-	counter := 0
+func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, fileName string) (*TrackWriter, error) {
+	var (
+		sb     *samplebuilder.SampleBuilder
+		writer media.Writer
+		err    error
+	)
 
-	if !("audio/opus" == track.Codec().MimeType && rp.Name() == "user1") {
-		return
+	switch {
+	case strings.EqualFold(track.Codec().MimeType, "audio/opus"):
+		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
+		writer, err = oggwriter.NewWith(&byteBuffer, 48000, track.Codec().Channels)
+
+	default:
+		return nil, nil
 	}
 
-	fmt.Println(fmt.Sprintf("User : %s", rp.Name()))
-	fmt.Print(fmt.Sprintf("Codec : %s", track.Codec().MimeType))
-
-	filename := RandStringBytes(20)
-
-	file, err := os.OpenFile(filename+".opus", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0777)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
+	t := &TrackWriter{
+		sb:     sb,
+		writer: writer,
+		track:  track,
+	}
+	go t.start()
+	return t, nil
+}
+
+func (t *TrackWriter) start() {
+	defer t.writer.Close()
 	for {
-		packet, _, err := track.ReadRTP()
+		pkt, _, err := t.track.ReadRTP()
+		if err != nil {
+			break
+		}
+		t.sb.Push(pkt)
 
-		if err == nil {
-			currentBuffer = append(currentBuffer, packet.Payload...)
+		for _, p := range t.sb.PopPackets() {
+			t.writer.WriteRTP(p)
 			counter++
+		}
 
-			_, err = file.Write(packet.Payload)
+		fmt.Println(counter)
+
+		if counter > 100 {
+
+			byteBufferPacket2 := make([]byte, 0, 0)
+			byteBufferPacket2 = byteBuffer.Bytes()
+
+			// HTTP endpoint
+
+			posturl := "http://127.0.0.1:5000"
+
+			request, err := http.NewRequest("POST", posturl, bytes.NewBuffer(byteBufferPacket2))
 			if err != nil {
 				panic(err)
 			}
 
-			if counter%1000 == 0 {
-				file.Close()
-				fmt.Println("Close")
-				return
+			client := &http.Client{}
+			_, err = client.Do(request)
+			if err != nil {
+				panic(err)
 			}
+
+			byteBuffer.Reset()
+			counter = 0
+
+			writer, err := oggwriter.NewWith(&byteBuffer, 48000, 2)
+			if err != nil {
+				panic(err)
+			}
+
+			t.writer = writer
 		}
 	}
-
-}
-
-func trackUnSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	fmt.Println(rp.Name())
 }
