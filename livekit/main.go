@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,17 +17,20 @@ import (
 	"github.com/livekit/server-sdk-go/pkg/samplebuilder"
 )
 
-var (
-	host, apiKey, apiSecret, roomName, identity string
+const (
+	maxAudioLate uint16 = 200
+	host         string = "ws://localhost:7880"
+	apiKey       string = "devkey"
+	apiSecret    string = "secret"
+	roomName     string = "my-first-room"
+	identity     string = "botuser"
+	serverUrl    string = "http://127.0.0.1:5000"
+
+	sampleRate   uint32 = 48000
+	channelCount uint16 = 2
 )
 
 func main() {
-	host := "ws://localhost:7880"
-	apiKey := "devkey"
-	apiSecret := "secret"
-	roomName := "my-first-room"
-	identity := "botuser"
-
 	room, err := lksdk.ConnectToRoom(host, lksdk.ConnectInfo{
 		APIKey:              apiKey,
 		APISecret:           apiSecret,
@@ -52,14 +53,8 @@ func main() {
 }
 
 func onTrackSubscribed(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	fileName := fmt.Sprintf("%s-%s", rp.Identity(), track.ID())
-	fmt.Println("write track to file ", fileName)
-	NewTrackWriter(track, rp.WritePLI, fileName)
+	NewTrackWriter(track)
 }
-
-const (
-	maxAudioLate = 200 // 4s for audio
-)
 
 type TrackWriter struct {
 	sb     *samplebuilder.SampleBuilder
@@ -67,32 +62,19 @@ type TrackWriter struct {
 	track  *webrtc.TrackRemote
 }
 
-const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-func RandStringBytes(n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letterBytes[rand.Intn(len(letterBytes))]
-	}
-	return string(b)
-}
-
-var counter = 0
-var byteBuffer bytes.Buffer
-
-func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, fileName string) (*TrackWriter, error) {
+func NewTrackWriter(track *webrtc.TrackRemote) (*TrackWriter, error) {
 	var (
 		sb     *samplebuilder.SampleBuilder
 		writer media.Writer
 		err    error
 	)
 
-	switch {
-	case strings.EqualFold(track.Codec().MimeType, "audio/opus"):
-		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
-		writer, err = oggwriter.NewWith(&byteBuffer, 48000, track.Codec().Channels)
+	var byteBuffer bytes.Buffer
 
-	default:
+	if strings.EqualFold(track.Codec().MimeType, "audio/opus") {
+		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
+		writer, err = oggwriter.NewWith(&byteBuffer, sampleRate, track.Codec().Channels)
+	} else {
 		return nil, nil
 	}
 
@@ -105,12 +87,16 @@ func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, fileNa
 		writer: writer,
 		track:  track,
 	}
-	go t.start()
+
+	go t.start(&byteBuffer)
 	return t, nil
 }
 
-func (t *TrackWriter) start() {
+func (t *TrackWriter) start(byteBuffer *bytes.Buffer) {
 	defer t.writer.Close()
+
+	var counter = 0
+
 	for {
 		pkt, _, err := t.track.ReadRTP()
 		if err != nil {
@@ -123,18 +109,11 @@ func (t *TrackWriter) start() {
 			counter++
 		}
 
-		fmt.Println(counter)
+		if counter > 500 {
 
-		if counter > 100 {
+			byteBufferToSend := byteBuffer.Bytes()
 
-			byteBufferPacket2 := make([]byte, 0, 0)
-			byteBufferPacket2 = byteBuffer.Bytes()
-
-			// HTTP endpoint
-
-			posturl := "http://127.0.0.1:5000"
-
-			request, err := http.NewRequest("POST", posturl, bytes.NewBuffer(byteBufferPacket2))
+			request, err := http.NewRequest("POST", serverUrl, bytes.NewBuffer(byteBufferToSend))
 			if err != nil {
 				panic(err)
 			}
@@ -148,7 +127,7 @@ func (t *TrackWriter) start() {
 			byteBuffer.Reset()
 			counter = 0
 
-			writer, err := oggwriter.NewWith(&byteBuffer, 48000, 2)
+			writer, err := oggwriter.NewWith(byteBuffer, sampleRate, channelCount)
 			if err != nil {
 				panic(err)
 			}
